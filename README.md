@@ -1,2 +1,20 @@
 # AMQ
 team wro fe AMQ
+
+
+This project turns a Raspberry Pi 5 with an IMX219 (Pi Camera v2) to make use of computer vision to develop a autonomously-driven car . The software detects specific colors and simultaneously learns the traversable floor appearance to steer toward open space. It outputs left/right wheel commands through PWM into an Arduino nano board, driving two DC motors. everything runs in Python except Arduino use c++ with OpenCV and Picamera2.
+Hardware & electromechanical mapping Compute/controller: Raspberry Pi 5 (runs all perception + control; it is the “controller”). Camera: IMX219 via CSI; captured with Picamera2 at e.g. 640×360 @ 30 FPS for low latency. Motor driver: Arduino nano board Motors: Two DC gear motors (differential drive). Power: 5 V rail for Pi (stable supply), separate 6–12 V for motors → common ground between Pi GND 
+Software architecture (modules & responsibilities) IMX219Camera Where: class IMX219Camera Does: Creates a Picamera2 video config (RGB888) at the requested size/FPS, starts the stream, captures a few frames, reads metadata, and disables AE/AWB using the last stable values (exposure, gains, color gains). Output: grab_bgr() returns a BGR frame ready for OpenCV.
+
+DualMotor Where: class DualMotor Does: Initializes GPIO, sets up two PWM channels on pins 12 and 13, and provides drive(left,right) with values in [-1, 1] (negative means reverse). It internally smooths commands to reduce jerk and wheel slip. stop() safely halts and cleans up GPIO. Hardware link: Directly maps to the L298N INx/ENx pins, thus to the motors.
+
+learn_floor_hsv Where: function learn_floor_hsv(...) Does: On startup, samples the bottom strip of the scene (e.g., bottom 15%) across ~25 frames, computes median HSV, and builds a floor HSV band with configurable tolerances. This adapts the “traversable” definition to your actual surface. Output: (lower_hsv, upper_hsv) threshold pair.
+
+color_avoid_dir Where: function color_avoid_dir(frame) Does: Builds an HSV mask for your selected TARGET_COLORS (with robust handling for red’s wrap-around). It filters the bottom half of the image, keeps the largest blob, and computes its centroid. Output: steer_away ∈ [-1,1] (positive = steer right), seen (did we detect a color obstacle?), area_norm (blob area fraction in ROI, used as a “threat” for slowing).
+
+floor_guidance Where: function floor_guidance(frame, lower, upper) Does: Thresholds the frame with the learned “floor” HSV band, focuses on the lower image half, and finds the centroid of traversable pixels; computes a steering offset toward that centroid. Also returns coverage ratio to decide if the path is blocked (very low coverage → likely an obstacle or dead end). Output: steer_floor ∈ [-1,1], blocked (coverage < threshold), cover_ratio (0..1).
+
+Main control loop Where: main() Pipeline: Grab frame → (A) color avoidance → (B) floor guidance → fuse directions → compute speed → safety (reverse briefly if extremely blocked) → map to left/right wheel PWM with low-pass smoothing → drive motors. Fusion logic: if a color obstacle is seen, steer = COLOR_WEIGHT * steer_color + (1-COLOR_WEIGHT) * steer_floor; else just steer_floor. Speed is BASE_SPEED, then reduced by color “threat” and by floor blockage. Actuation: left = speed - STEER_GAINsteer, right = speed + STEER_GAINsteer, both clipped to [-1,1].
+
+Adaptive floor model: learns your surface once at boot → resilient to textures/marks typical of that floor. Color-specific obstacle: lets you encode semantics (e.g., avoid red cones even if floor looks open). Command smoothing: reduces wheelspin and oscillations. AE/AWB lock: keeps HSV thresholds meaningful across frames. Parameter knobs you’ll actually touch TARGET_COLORS and HSV_RANGES: define what to avoid; tune per lighting. ROI settings: FOCUS_BAND_Y0, ROI_FLOOR_Y determine where we “look.” Thresholds: AREA_MIN_PIXELS, FLOOR_BLOCK_THRESH, FLOOR_HARD_BLOCK. Dynamics: BASE_SPEED, STEER_GAIN, SMOOTH_ALPHA, COLOR_WEIGHT, SLOW_BY_COLOR. Reverse behavior: REVERSE_SPEED, REVERSE_TIME.
+
